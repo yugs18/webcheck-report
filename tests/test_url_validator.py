@@ -18,6 +18,9 @@ class TestValidateUrl(unittest.TestCase):
     def test_rejects_missing_hostname(self):
         self.assertFalse(validate_url("https:///misssing-host"))
 
+    def test_structurally_valid_loopback_url(self):
+        self.assertTrue(validate_url("https://127.0.0.1"))
+
 
 if __name__ == "__main__":
     unittest.main()
