@@ -1,49 +1,56 @@
 # WebCheck Report
 
-WebCheck Report is a Python command-line tool for checking HTTP/HTTPS endpoints and producing structured JSON diagnostic reports. It is also a learning project for Python, networking, HTTP, secure programming, testing, and product development.
+WebCheck Report is a Python command-line tool that checks HTTP/HTTPS endpoints and creates structured JSON diagnostic reports. It is also a practical project for learning Python, networking, HTTP, secure programming, testing, and product development.
 
-> **Project status:** Early-stage CLI prototype. The HTTP transport uses a pinned socket destination and the current automated test suite contains 18 tests. Passing tests are not a security certification.
+> **Project status:** Early-stage CLI prototype. Application-level Phase 2 hardening has been reviewed for manual checks of authorized public URLs. This is not production-hardened and must not be used as a security boundary for arbitrary or untrusted URLs. Passing tests are evidence of expected behavior, not a security certification.
 
 ## Features
 
-- **URL validation:** Checks the URL scheme, hostname, literal whitespace, and port syntax.
-- **Destination filtering:** Resolves DNS and retains only socket-address records whose IP address passes Python's `ipaddress.ip_address(...).is_global` classification.
-- **Pinned TCP connection:** The HTTP/HTTPS transport connects to a selected approved `getaddrinfo()` socket address rather than asking the transport to resolve the original hostname again.
-- **HTTPS identity:** Uses a default client SSL context and the original hostname for TLS server identity and certificate hostname verification.
-- **HTTP diagnostics:** Performs a GET request and records the response status, response headers, elapsed time, and errors. It does not download the response body.
-- **Redirect behavior:** Returns redirect status and headers without automatically following the redirect.
-- **JSON reports:** Writes a timestamped JSON report.
-- **CLI behavior:** Provides terminal output and exit codes for URL errors and operational failures.
-- **Automated tests:** Covers URL validation, address filtering, pinned connection behavior, TLS hostname handling, redirects, CLI behavior, and report output.
+- **HTTP/HTTPS checks:** Sends a `GET` request and records the status code, response headers, elapsed time, and any error. It does not download the response body.
+- **URL validation:** Validates HTTP/HTTPS URL syntax and rejects unsupported or malformed input before making a request.
+- **Hostname normalization:** Normalizes DNS hostnames to lowercase ASCII IDNA form, preserves a trailing dot, and handles IPv4/IPv6 literals separately.
+- **Destination filtering:** Resolves a hostname and accepts only addresses that pass the global-unicast policy. In addition to Python's `ipaddress` classification, the policy explicitly rejects multicast, scoped IPv6, loopback, link-local, private, unspecified, and reserved address types.
+- **Pinned TCP connections:** Connects directly to a selected, approved `getaddrinfo()` socket address rather than resolving the original hostname again inside the HTTP transport.
+- **HTTPS verification:** Uses a default client TLS context and the original hostname for TLS server identity and certificate hostname verification.
+- **Redirect reporting:** Reports a redirect status and its headers without automatically following the redirect.
+- **Connection retries:** Tries subsequent approved address candidates when connection establishment fails, within the remaining timeout budget.
+- **Bounded DNS wait:** Uses a fixed maximum of four background resolver jobs and stops waiting when the remaining DNS budget expires. A system resolver call that ignores its own timeout can continue in a daemon thread and hold its slot; the number of resolver threads remains bounded.
+- **Timeout input validation:** The client API rejects non-numeric, boolean, non-finite, non-positive, and greater-than-300-second timeout values.
+- **Standalone CLI supervisor:** The CLI waits at most 10 seconds for a check, emits a timeout report if the work has not returned, and exits without waiting for its daemon check thread. This bounds the CLI process entry point; it does not turn `check_url()` into a forcibly cancellable operation for a long-running embedded caller.
+- **JSON reports:** Saves a report with a UTC generation timestamp; supports a custom output path.
+- **CLI exit codes:** Distinguishes invalid URL syntax from operational/request or report-writing failures.
+- **Standard-library implementation:** No third-party runtime or test dependencies are required.
 
 ## How it works
 
-1. Validate the input URL.
-2. Parse the hostname and effective port.
-3. Resolve the hostname into socket-address candidates.
-4. Filter the candidates using `ipaddress.ip_address(...).is_global`.
-5. Try the approved candidates one at a time, connecting directly to the chosen socket address.
-6. For HTTPS, wrap the connected socket with TLS using the original hostname and the default verification context.
-7. Send a GET request using the URL path and query, capture response metadata, and close the connection.
+1. Validate the supplied URL and parse its scheme, hostname, path, query, and port.
+2. Normalize the hostname and reject embedded URL credentials or an invalid port.
+3. Resolve the hostname into socket-address candidates while bounding how long the caller waits for DNS.
+4. Filter candidates using the explicit destination policy: require `is_global`, reject multicast and scoped addresses, and explicitly reject prohibited special address properties; fail if no candidates remain.
+5. Attempt direct connections to the approved socket addresses without asking the HTTP transport to perform another DNS lookup.
+6. For HTTPS, wrap the connected socket with TLS using the original hostname and the default certificate-verification context.
+7. Send a `GET` request, collect response status and headers, then close the response and connection.
 8. Save the result in a timestamped JSON report.
 
-### Destination policy
+## Destination policy and transport behavior
 
-The current policy **filters** non-global candidates from mixed DNS answers. If a result set has both approved and prohibited addresses, the checker retains the approved records and does not attempt the prohibited records. If no approved records remain, the check fails.
+The current policy **filters** prohibited candidates from mixed DNS answers. A destination must pass `ipaddress` global-reachability classification and must not be multicast, scoped, unspecified, loopback, link-local, private, or reserved. IPv4-mapped IPv6 addresses are evaluated using the embedded IPv4 address. If no approved candidates remain, the check fails. A mixed answer is not automatically rejected when it contains at least one approved candidate; this is an explicit policy choice.
 
-This is an intentional policy choice; it is not an assertion that `is_global` alone covers every routing, operating-system, proxy, or SSRF risk. The client makes direct connections and does not use environment-configured HTTP proxies. Redirects are not followed; if redirect handling is added later, each new destination will need independent validation.
+The connection is pinned to an approved numeric socket address to avoid a second hostname lookup during TCP connection establishment. This reduces a time-of-check/time-of-use risk, but it does **not** prove resistance to every SSRF or DNS-rebinding scenario.
+
+The client connects directly and intentionally does not use environment-configured HTTP proxies. It does not follow redirects. If redirect support is added in the future, every redirect destination must be parsed and validated independently before any new connection is attempted. The client currently accepts a URL-specified destination port; a deployment that processes untrusted URLs must enforce its own outbound port allowlist, typically TCP 80/443 unless other ports are explicitly required.
 
 ## Requirements
 
-- Python 3.12 or newer is the project's target baseline.
+- Python 3.12.4 or newer is the intended baseline. The `ipaddress` module's global/private classification changed in Python 3.12.4 and 3.13; run the test suite on every Python version you intend to support.
 - A terminal.
-- Network/DNS access to check public destinations.
+- DNS and network access to check public destinations.
 - Git is recommended for version control.
-- The project currently uses only Python's standard library. No third-party runtime or test dependencies are required; `requirements.txt` is intentionally empty apart from explanatory comments.
+- The project currently uses only Python's standard library. `requirements.txt` is intentionally empty apart from explanatory comments.
 
 ## Installation
 
-Clone the repository and enter its directory:
+Clone the repository and enter the project directory:
 
 ```bash
 git clone <your-repository-url>
@@ -57,37 +64,39 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-The standard-library-only project does not need a package-install step. The `requirements.txt` file is included to make the absence of third-party dependencies explicit and to provide a place to record them if that changes later.
+No `pip install` step is required while the project remains standard-library-only.
 
 ## Usage
 
-Check a public HTTP/HTTPS URL:
+Check an HTTP or HTTPS URL:
 
 ```bash
 python -m webcheck https://example.com
 ```
 
-Choose a report path:
+Choose the JSON report path explicitly:
 
 ```bash
 python -m webcheck https://example.com --output reports/example.json
 ```
 
-By default, reports are written under `reports/` with timestamped filenames. The terminal summary includes the URL, HTTP status, response time, any error, and report location.
+By default, a report is written under `reports/` with a UTC timestamp in its filename. The terminal summary prints the URL, HTTP status, elapsed time, any error, and the report location.
 
 ### Exit codes
 
 | Exit code | Meaning |
 |---:|---|
-| `0` | The request produced a diagnostic response without a tool-level error. An HTTP status such as `404` is still a valid diagnostic result. |
-| `1` | The check failed operationally, or the report could not be saved. |
+| `0` | The check produced a response without a tool-level error. An HTTP status such as `404` is still a valid diagnostic result. |
+| `1` | The request/check failed operationally, or the report could not be saved. |
 | `2` | The supplied URL failed the CLI's initial URL syntax validation. |
 
-## Example report
+A failed network check is still represented in a JSON report when report writing succeeds. Invalid URL syntax is rejected before a report is generated.
+
+## Example JSON report
 
 ```json
 {
-  "generated_at": "UTC ISO 8601 timestamp",
+  "generated_at": "2026-10-20T15:00:00+00:00",
   "result": {
     "url": "https://example.com",
     "status_code": 200,
@@ -100,19 +109,21 @@ By default, reports are written under `reports/` with timestamped filenames. The
 }
 ```
 
-The values are illustrative; real response data depends on the destination.
+The values above are illustrative. The actual status, headers, elapsed time, and error depend on the destination and network conditions.
 
 ## Tests
 
-Run the complete standard-library `unittest` suite from the repository root:
+Run the complete `unittest` suite from the repository root:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-**Latest verification for the uploaded source snapshot:** 18 tests passed. A separate local HTTP smoke test in the review environment also returned HTTP 200 and confirmed the request path/query and a single Host header. That one-off smoke test is not currently part of the committed test suite.
+The suite covers URL validation, public-IP filtering, mixed DNS answers, IPv4/IPv6 classification edge cases including multicast and scoped addresses, bounded DNS wait, pinned socket destinations, request construction, redirect handling, connection retry and cleanup behavior, hostname normalization/IDNA, timeout input/deadline behavior, CLI/report behavior, and TLS validation. A GitHub Actions workflow runs the suite on Python 3.12, 3.13, and 3.14; successful local verification alone does not prove those CI jobs have passed.
 
-The test suite uses mocks for key connection/TLS behaviors. An actual external HTTPS handshake was not verified during this review because DNS resolution for the external test hostname failed in the execution environment. A real TLS integration test remains on the roadmap.
+Local HTTPS integration tests use test-only certificate fixtures to verify that a trusted certificate with a matching subject alternative name succeeds, while an untrusted certificate and a trusted certificate with a mismatching name are rejected. These are local test certificates only; certificate verification must not be disabled to make a test pass.
+
+Run the full suite in the current checkout before committing or releasing changes. The number of tests can change as the suite evolves, so the command output from the current checkout is the source of truth for the latest test count.
 
 ## Project structure
 
@@ -120,6 +131,11 @@ The test suite uses mocks for key connection/TLS behaviors. An actual external H
 webcheck-report/
 ├── README.md
 ├── ROADMAP.md
+├── SECURITY_DEPLOYMENT.md
+├── SECURITY_REVIEW_PHASE2.md
+├── .github/
+│   └── workflows/
+│       └── tests.yml
 ├── requirements.txt
 ├── reports/
 │   └── .gitkeep
@@ -130,44 +146,53 @@ webcheck-report/
 │   ├── report.py
 │   └── url_validator.py
 └── tests/
+    ├── fixtures/
+    │   ├── ca.crt
+    │   ├── server.crt
+    │   ├── server.key
+    │   ├── wrong-server.crt
+    │   └── wrong-server.key
     ├── test_cli.py
+    ├── test_hostname_policy.py
     ├── test_http_client.py
+    ├── test_https_integration.py
     ├── test_network_safety.py
     ├── test_report.py
     └── test_url_validator.py
 ```
 
-## Security considerations and limitations
+The fixture names reflect the HTTPS integration test setup. Keep these private test keys restricted to the test environment; never reuse them for a real server.
 
-WebCheck Report is an early-stage diagnostic tool, not a production-hardened security scanner.
+## Security considerations and known limitations
 
-- Use it only against systems you own or are explicitly authorized to test.
-- Address filtering relies on Python's `ipaddress` classification. IPv4/IPv6 special cases and unusual network configurations need further review and tests.
-- Mixed public/non-public DNS answers are filtered rather than causing the entire hostname to be rejected. The implementation must continue to connect only to the returned approved records.
-- The custom transport makes direct connections and does not honor environment-configured HTTP proxies. This behavior is intentional but should be documented for users operating behind proxies.
-- HTTPS uses the default SSL context and supplies the original hostname to TLS. Mocked unit tests do not prove that every real-world TLS/certificate case succeeds; certificate failures must not be bypassed by disabling verification.
-- Redirects are not followed. This behavior must not be weakened without validating each redirect destination independently.
-- The configured timeout is applied to socket operations; it is not a strict total wall-clock deadline, and system DNS resolution may take additional time.
-- IDN/Unicode hostname behavior, expanded IPv6 edge cases, retry/resource-cleanup behavior, and live TLS integration still need additional tests.
-- Network egress restrictions and execution isolation provide additional defense in depth.
+WebCheck Report is an early-stage diagnostics tool, **not a production-hardened security scanner**. Use it only with systems you own or are explicitly authorized to test.
 
-A passing test suite does not establish production security or prove resistance to every SSRF/DNS-rebinding scenario.
+- **IP classification:** The policy uses Python's `ipaddress` classification plus explicit exclusions for multicast and scoped addresses. The standard-library classification can change between Python releases; support only versions tested by the project. Address classification cannot account for every operating-system route, NAT, firewall, transparent proxy, or unusual network configuration.
+- **Mixed DNS answers:** Non-global results are filtered; mixed answers do not cause the entire hostname to be rejected. Only retained, approved socket-address records should be used for connection attempts.
+- **DNS and timeouts:** The client API operation budget starts before DNS. The caller stops waiting for `getaddrinfo()` when the remaining budget expires, and at most four background resolver calls can be outstanding. The system resolver call itself cannot be forcibly cancelled safely and may continue occupying one bounded daemon-thread slot. Socket timeout settings apply to individual blocking operations, not a strict total wall-clock deadline; a slow peer that continually sends small amounts of data can exceed the budget before an overrun is detected. The standalone CLI adds a 10-second supervisor wait and then exits; `check_url()` used directly inside a long-running process does not forcibly cancel the operation. The 300-second maximum applies to the client API; the CLI currently uses its fixed 10-second limit.
+- **Connection retries:** Only approved candidates are eligible for retries. Retry behavior and cleanup should remain covered by regression tests as the transport changes.
+- **TLS:** HTTPS uses a default SSL context and the original hostname for certificate verification. Do not suppress certificate errors or disable hostname verification.
+- **Redirects:** Redirects are returned as responses and are not followed. Future redirect support would require independent destination validation for every hop.
+- **Proxy behavior:** The custom transport connects directly and ignores environment-configured HTTP proxy settings. This is intentional, but users behind a proxy may not be able to use the tool as expected.
+- **IDNA:** Hostname normalization uses Python's built-in `idna` codec. Its behavior is not a claim of complete support for every IDNA standard/profile.
+- **Defense in depth:** The application does not enforce OS/container network egress rules. If the tool is ever run as a service or accepts URLs from untrusted users, isolate it and enforce outbound network policy outside the Python process (for example, with a firewall or container/network namespace). Permit only the protocols and destinations required by the product.
 
-## Development philosophy
+A passing test suite does not establish production security or guarantee protection against every SSRF, DNS-rebinding, routing, NAT, IPv4/IPv6 translation, or infrastructure-level scenario. The application-level Phase 2 review is complete for the current manual CLI use case, but the tool is still not suitable as a standalone security boundary for untrusted URL input. A killable per-check process boundary for service usage and enforced network egress restrictions remain deployment-level/security-architecture requirements before accepting untrusted URLs.
+
+## Development principles
 
 1. Understand the problem before adding complexity.
 2. Keep modules focused and changes small enough to review.
 3. Add regression tests for bugs and security-sensitive behavior.
 4. Never claim a security guarantee that the implementation and tests have not established.
 5. Keep secrets, virtual environments, and generated reports out of Git.
-6. Prefer reliable functionality over feature count.
-7. Validate real user demand before investing in larger product infrastructure.
+6. Use only authorized targets and avoid unnecessary network traffic.
+7. Prefer reliable functionality over feature count.
+8. Validate real user demand before investing in larger product infrastructure.
 
-## Long-term goal
+## Roadmap
 
-The long-term goal is to determine whether a useful, reliable web diagnostics product can be built and distributed. Potential future directions include multiple-target checks, historical comparisons, monitoring, alerts, and a user-friendly interface. These are possibilities, not current capabilities or guaranteed plans.
-
-See [ROADMAP.md](ROADMAP.md) for current milestones.
+See [ROADMAP.md](ROADMAP.md) for current milestones and [SECURITY_DEPLOYMENT.md](SECURITY_DEPLOYMENT.md) for the deployment gate that must be satisfied before accepting untrusted URL input.
 
 ## License
 

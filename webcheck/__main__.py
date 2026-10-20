@@ -1,12 +1,71 @@
 """Command-line entry point for the WebCheckReport application."""
 
-import argparse, sys
+import argparse
+import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from webcheck.http_client import check_url # type: ignore
 from webcheck.report import create_report, save_report # type: ignore
 from webcheck.url_validator import validate_url # type: ignore
+
+
+CLI_CHECK_TIMEOUT_SECONDS = 10.0
+
+
+def _run_check_with_wall_clock_limit(
+    url: str, timeout: float = CLI_CHECK_TIMEOUT_SECONDS
+) -> dict:
+    """Bound the standalone CLI's wait for a single check.
+
+    The check runs in a daemon thread. When the limit expires, the CLI can
+    produce a timeout report without waiting for a slow system resolver or
+    network operation. The standalone command then exits, which stops its
+    daemon threads during interpreter shutdown. This is not a cancellation
+    guarantee for callers that import ``check_url`` or ``main`` into a
+    long-running process; such services should supervise work in a killable
+    worker process and enforce outbound network restrictions.
+    """
+    started = time.perf_counter()
+    completed = threading.Event()
+    outcome = {}
+
+    def perform_check():
+        try:
+            outcome["result"] = check_url(url, timeout=timeout)
+        except Exception as error:
+            outcome["error"] = error
+        finally:
+            completed.set()
+
+    worker = threading.Thread(
+        target=perform_check,
+        name="webcheck-cli-check",
+        daemon=True,
+    )
+    worker.start()
+
+    if not completed.wait(timeout):
+        return {
+            "url": url,
+            "status_code": None,
+            "headers": {},
+            "elapsed_seconds": round(time.perf_counter() - started, 4),
+            "error": f"CLI wall-clock limit exceeded after {timeout:g} seconds",
+        }
+
+    if "error" in outcome:
+        return {
+            "url": url,
+            "status_code": None,
+            "headers": {},
+            "elapsed_seconds": round(time.perf_counter() - started, 4),
+            "error": f"Unexpected check failure: {outcome['error']}",
+        }
+
+    return outcome["result"]
 
 
 def main() -> int:
@@ -40,7 +99,10 @@ def main() -> int:
 
     # check_url returns failures (such as timeouts) as result data, allowing the
     # same report format to be written whether the request succeeds or not.
-    result = check_url(args.url)
+    result = _run_check_with_wall_clock_limit(
+        args.url,
+        timeout=CLI_CHECK_TIMEOUT_SECONDS,
+    )
     report = create_report(result)
 
     # An explicit --output path is used as given. Otherwise generate a

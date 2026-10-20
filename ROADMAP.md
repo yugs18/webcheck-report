@@ -6,9 +6,9 @@ Build a reliable, understandable web-diagnostics tool; use its development to st
 
 ## Current status
 
-**Stage:** CLI prototype with initial connection pinning implemented. Phase 2 hardening remains in progress.
+**Stage:** CLI prototype. Application-level Phase 2 hardening is complete for manual checks of authorized public URLs; the production/untrusted-input gate remains open. Do not treat the tool as production-hardened or as a security boundary for arbitrary URLs.
 
-**Latest verified automated test result for the uploaded source snapshot:** 18 tests passing. A separate local HTTP smoke test succeeded during review; a real external HTTPS handshake could not be confirmed because external DNS resolution failed in that environment.
+**Local verification:** 49 tests passed on Python 3.13.5 in the final review worktree. The suite includes local HTTPS integration tests using test-only certificates. A GitHub Actions matrix has been added for Python 3.12, 3.13, and 3.14; those remote CI jobs must pass before release. Re-run the suite in the actual checkout before committing.
 
 ### Implemented
 
@@ -42,7 +42,7 @@ Build a reliable, understandable web-diagnostics tool; use its development to st
 
 ### Implemented so far
 
-- [x] Resolve hostname candidates with `socket.getaddrinfo()`.
+- [x] Resolve hostname candidates with `socket.getaddrinfo()` through a bounded caller-wait helper.
 - [x] Filter non-global candidates and fail if none remain.
 - [x] Connect directly to the selected approved socket address.
 - [x] Use the pinned connection for the HTTP request rather than opening a separate `urllib` connection.
@@ -50,19 +50,27 @@ Build a reliable, understandable web-diagnostics tool; use its development to st
 - [x] Preserve the original hostname for HTTPS TLS identity with the default client SSL context.
 - [x] Add unit tests for mixed DNS answers, all-prohibited answers, DNS errors, exact socket destination, request construction, redirect behavior, and the TLS hostname argument.
 
-### Remaining work
+### Security review status (2026-10-20)
 
-- [ ] Add deterministic tests for connection failure across multiple approved candidates and socket cleanup.
-- [ ] Add a local HTTPS integration test that verifies a trusted certificate/SAN and confirms rejection of an invalid certificate; never disable TLS verification to make a test pass.
-- [ ] Expand IPv4 and IPv6 edge-case coverage, including loopback, private, link-local, reserved, IPv4-mapped IPv6, and unusual scoped addresses as applicable.
-- [ ] Decide and test how internationalized/Unicode hostnames are supported or rejected, including correct Host authority formatting.
-- [ ] Test that the configured timeout behavior is documented accurately and consider a total operation deadline; DNS resolution can exceed the socket timeout.
-- [ ] Review `ipaddress.is_global` against the project's explicit destination policy and supported Python versions.
-- [ ] Keep direct-connection and proxy behavior explicit; ensure no future transport feature can silently use an unvalidated target.
-- [ ] Add regression tests for any discovered edge cases and document remaining limitations.
-- [ ] Evaluate network egress restrictions as additional defense in depth.
+The code-level review checklist below has been addressed for the reviewed source snapshot. This means the review and documentation tasks are complete; it does **not** mean the tool is production-hardened or appropriate for untrusted targets.
 
-**Completion criteria:** The destination policy is documented, the connection path is tested end to end where feasible, TLS verification remains enabled, retries and cleanup are covered, and remaining risks are clearly stated. Do not treat this phase as complete yet.
+- [x] Add deterministic tests for connection failure across multiple approved candidates and socket cleanup; repair the test assertion typo so socket cleanup is genuinely asserted.
+- [x] Verify local HTTPS behavior with a trusted certificate and matching SAN, and reject untrusted or wrong-SAN certificates. Keep certificate verification enabled.
+- [x] Cover IPv4/IPv6 loopback, private, link-local, reserved, IPv4-mapped, multicast, and scoped-address policy cases in the reviewed suite.
+- [x] Test IDNA hostname normalization and Host-header formatting; reject scoped IPv6 literals explicitly.
+- [x] Validate timeout input: finite positive numeric values only, with a 300-second maximum.
+- [x] Bound caller waiting for system DNS resolution and cap outstanding resolver workers at four. A timed-out resolver call cannot be forcibly cancelled and may retain its bounded worker slot until the OS resolver returns.
+- [x] Start the operation budget before DNS and pass the remaining budget to DNS and subsequent socket operations.
+- [x] Reject responses detected as late and guarantee response/connection cleanup on that path.
+- [x] Review `ipaddress.is_global` and strengthen the policy to reject multicast, scoped, unspecified, loopback, link-local, private, and reserved address properties explicitly in addition to requiring global classification.
+- [x] Document direct connections and proxy behavior; the client intentionally bypasses environment-configured HTTP proxies.
+- [x] Add regression coverage for destination filtering, bounded DNS wait, invalid timeouts, timeout overrun/cleanup, TLS validation, retries, and redirect behavior.
+- [x] Add a Python 3.12/3.13/3.14 GitHub Actions test matrix.
+- [x] Evaluate egress restrictions and record a deployment gate in `SECURITY_DEPLOYMENT.md`: external firewall/network policy is mandatory before the tool accepts untrusted URLs as a service.
+- [ ] For any long-running service, run each check in a killable process with a supervisor deadline so slow-drip HTTP/TLS operations cannot outlive the per-check budget. The standalone CLI already has a 10-second supervisor wait and process-exit boundary; direct library callers still need their own supervisor.
+- [ ] Configure and verify host/container/network egress policy in the actual deployment environment before processing untrusted URLs. This cannot be proved or applied from a source-code patch alone.
+
+**Phase 2 conclusion:** The application-level code review is complete for the current manual CLI use case, with 49 tests passing on Python 3.13.5. The standalone CLI applies a 10-second supervisor wait and exits when a check exceeds it; the library-level `check_url()` call remains best-effort. This does **not** mark the product production-hardened. A killable per-check process boundary and enforced outbound network policy remain release blockers for any service or workflow that accepts untrusted URLs.
 
 ## Phase 3 — Reliability and usability
 
@@ -108,7 +116,7 @@ Potential features; none are commitments until the core safety and user need jus
 - [ ] Define a stable CLI interface.
 - [ ] Package the project for straightforward installation.
 - [ ] Add troubleshooting documentation.
-- [ ] Add continuous integration to run tests automatically.
+- [x] Add continuous integration to run tests automatically (Python 3.12/3.13/3.14 matrix; verify remote runs before release).
 - [ ] Choose an appropriate open-source or commercial license.
 - [ ] Establish versioning, release practices, and issue tracking.
 - [ ] Explore a paid offering only if users demonstrate willingness to pay.
@@ -142,8 +150,7 @@ Each direction requires an independent assessment of user value, cost, operation
 
 ## Immediate next actions
 
-1. Replace the old README and roadmap with the current versions.
-2. Add the standard-library-only `requirements.txt`.
-3. Run `python -m unittest discover -s tests -v` and confirm all tests pass.
-4. Add automated local HTTP and HTTPS transport integration tests, building on the one-off local HTTP smoke test.
-5. Address Phase 2's remaining DNS/IP, retry, timeout, and TLS cases before claiming hardened SSRF protection.
+1. Apply the reviewed source, tests, documentation, fixtures, and CI workflow in the actual checkout.
+2. Run `python -m unittest discover -s tests -v` and confirm all tests pass locally; verify the Python-version CI matrix when pushed.
+3. Before accepting untrusted URLs, enforce and verify egress restrictions and replace the best-effort HTTP/TLS timeout with a boundary that can stop slow-drip operations.
+4. Keep the production/untrusted-input warning until those security gates are satisfied.
