@@ -1,63 +1,63 @@
 # WebCheck Report
 
-A Python command-line tool for checking public HTTP/HTTPS endpoints and generating structured JSON diagnostic reports.
+WebCheck Report is a Python command-line tool for checking HTTP/HTTPS endpoints and producing structured JSON diagnostic reports. It is also a learning project for Python, networking, HTTP, secure programming, testing, and product development.
 
-WebCheck Report is an independent software project being built from scratch to develop practical skills in Python, networking, HTTP, software testing, secure programming, and product development.
-
-> **Project status:** Early development — CLI prototype implemented, 21 automated tests passing.
+> **Project status:** Early-stage CLI prototype. The HTTP transport uses a pinned socket destination and the current automated test suite contains 18 tests. Passing tests are not a security certification.
 
 ## Features
 
-- **URL validation:** Checks URL structure, supported schemes, hostname presence, whitespace, and port validity.
-- **HTTP diagnostics:** Sends HTTP GET requests and records response status codes, response headers, and elapsed time.
-- **Network safety checks:** Resolves destination addresses and rejects destinations that resolve to non-public IP addresses.
-- **Redirect handling:** Reports HTTP redirects without automatically following them.
-- **Error handling:** Handles invalid URLs, DNS resolution failures, connection failures, and timeouts.
-- **JSON reports:** Saves diagnostic results with a UTC timestamp.
-- **Command-line interface:** Runs checks directly from the terminal.
-- **Automated tests:** Tests URL validation, HTTP behavior, network safety, report generation, and CLI behavior.
+- **URL validation:** Checks the URL scheme, hostname, literal whitespace, and port syntax.
+- **Destination filtering:** Resolves DNS and retains only socket-address records whose IP address passes Python's `ipaddress.ip_address(...).is_global` classification.
+- **Pinned TCP connection:** The HTTP/HTTPS transport connects to a selected approved `getaddrinfo()` socket address rather than asking the transport to resolve the original hostname again.
+- **HTTPS identity:** Uses a default client SSL context and the original hostname for TLS server identity and certificate hostname verification.
+- **HTTP diagnostics:** Performs a GET request and records the response status, response headers, elapsed time, and errors. It does not download the response body.
+- **Redirect behavior:** Returns redirect status and headers without automatically following the redirect.
+- **JSON reports:** Writes a timestamped JSON report.
+- **CLI behavior:** Provides terminal output and exit codes for URL errors and operational failures.
+- **Automated tests:** Covers URL validation, address filtering, pinned connection behavior, TLS hostname handling, redirects, CLI behavior, and report output.
 
-## How It Works
+## How it works
 
-The current workflow is:
+1. Validate the input URL.
+2. Parse the hostname and effective port.
+3. Resolve the hostname into socket-address candidates.
+4. Filter the candidates using `ipaddress.ip_address(...).is_global`.
+5. Try the approved candidates one at a time, connecting directly to the chosen socket address.
+6. For HTTPS, wrap the connected socket with TLS using the original hostname and the default verification context.
+7. Send a GET request using the URL path and query, capture response metadata, and close the connection.
+8. Save the result in a timestamped JSON report.
 
-1. Accept a URL from the command line.
-2. Validate the URL structure.
-3. Resolve the hostname and check the resulting IP addresses.
-4. Send an HTTP GET request if the destination passes the network safety check.
-5. Capture the status code, response headers, elapsed time, and any error.
-6. Create a timestamped JSON report.
-7. Save the report and display a summary in the terminal.
+### Destination policy
+
+The current policy **filters** non-global candidates from mixed DNS answers. If a result set has both approved and prohibited addresses, the checker retains the approved records and does not attempt the prohibited records. If no approved records remain, the check fails.
+
+This is an intentional policy choice; it is not an assertion that `is_global` alone covers every routing, operating-system, proxy, or SSRF risk. The client makes direct connections and does not use environment-configured HTTP proxies. Redirects are not followed; if redirect handling is added later, each new destination will need independent validation.
 
 ## Requirements
 
-- Python 3.12 or a compatible Python version.
+- Python 3.12 or newer is the project's target baseline.
 - A terminal.
-- Internet connectivity for checking public endpoints.
-- Git, for version control.
+- Network/DNS access to check public destinations.
+- Git is recommended for version control.
+- The project currently uses only Python's standard library. No third-party runtime or test dependencies are required; `requirements.txt` is intentionally empty apart from explanatory comments.
 
 ## Installation
 
-Clone the repository and enter the project directory:
+Clone the repository and enter its directory:
 
 ```bash
 git clone <your-repository-url>
 cd webcheck-report
 ```
 
-Create a virtual environment:
+Create and activate a virtual environment on Linux:
 
 ```bash
 python3 -m venv .venv
-```
-
-Activate it on Linux:
-
-```bash
 source .venv/bin/activate
 ```
 
-The project currently uses Python's standard library, so no third-party runtime dependencies are required.
+The standard-library-only project does not need a package-install step. The `requirements.txt` file is included to make the absence of third-party dependencies explicit and to provide a place to record them if that changes later.
 
 ## Usage
 
@@ -67,33 +67,27 @@ Check a public HTTP/HTTPS URL:
 python -m webcheck https://example.com
 ```
 
-Save the report to a specific location:
+Choose a report path:
 
 ```bash
 python -m webcheck https://example.com --output reports/example.json
 ```
 
-The tool prints a summary containing the URL, HTTP status, elapsed time, any error, and the report location.
+By default, reports are written under `reports/` with timestamped filenames. The terminal summary includes the URL, HTTP status, response time, any error, and report location.
 
-By default, reports are saved under `reports/` with timestamped filenames.
-
-### Exit Codes
+### Exit codes
 
 | Exit code | Meaning |
-|---|---|
-| `0` | The check produced a diagnostic result without a tool-level error. |
-| `1` | The check encountered an operational error, such as a network failure. |
-| `2` | The supplied URL is invalid. |
+|---:|---|
+| `0` | The request produced a diagnostic response without a tool-level error. An HTTP status such as `404` is still a valid diagnostic result. |
+| `1` | The check failed operationally, or the report could not be saved. |
+| `2` | The supplied URL failed the CLI's initial URL syntax validation. |
 
-An HTTP error status, such as `404`, is still a valid diagnostic result and does not by itself mean the tool failed.
-
-## Example Report Structure
-
-A generated JSON report has this general structure:
+## Example report
 
 ```json
 {
-  "generated_at": "UTC timestamp",
+  "generated_at": "UTC ISO 8601 timestamp",
   "result": {
     "url": "https://example.com",
     "status_code": 200,
@@ -106,37 +100,27 @@ A generated JSON report has this general structure:
 }
 ```
 
-The values above illustrate the report format; actual response headers, status codes, and timings depend on the destination.
+The values are illustrative; real response data depends on the destination.
 
-## Running Tests
+## Tests
 
-Run the complete test suite:
+Run the complete standard-library `unittest` suite from the repository root:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-The current suite contains 21 tests covering:
+**Latest verification for the uploaded source snapshot:** 18 tests passed. A separate local HTTP smoke test in the review environment also returned HTTP 200 and confirmed the request path/query and a single Host header. That one-off smoke test is not currently part of the committed test suite.
 
-- URL validation.
-- Successful HTTP responses.
-- HTTP error responses.
-- Connection errors.
-- Redirect handling.
-- Non-public destination rejection.
-- DNS resolution edge cases.
-- JSON report generation and saving.
-- CLI exit codes and error reporting.
+The test suite uses mocks for key connection/TLS behaviors. An actual external HTTPS handshake was not verified during this review because DNS resolution for the external test hostname failed in the execution environment. A real TLS integration test remains on the roadmap.
 
-**Current verified result:** All 21 tests pass.
-
-## Project Structure
+## Project structure
 
 ```text
 webcheck-report/
-├── .gitignore
 ├── README.md
 ├── ROADMAP.md
+├── requirements.txt
 ├── reports/
 │   └── .gitkeep
 ├── webcheck/
@@ -153,42 +137,38 @@ webcheck-report/
     └── test_url_validator.py
 ```
 
-Generated reports, Python cache files, and the virtual environment are excluded from version control.
-
-## Security Considerations and Limitations
+## Security considerations and limitations
 
 WebCheck Report is an early-stage diagnostic tool, not a production-hardened security scanner.
 
-- Use it only to check systems you own or are explicitly authorized to test.
-- The current network safety check rejects hostnames that resolve to non-public IP addresses.
-- DNS is resolved during validation, and the HTTP client may resolve the hostname again when connecting. This creates a potential DNS-rebinding or time-of-check/time-of-use risk that has not yet been eliminated.
-- Redirects are not automatically followed, reducing the risk of silently reaching an unintended destination.
-- Network-level restrictions and connection-time destination enforcement are still needed before the tool can be considered robust against server-side request forgery (SSRF) scenarios.
-- A passing test suite does not establish production security.
+- Use it only against systems you own or are explicitly authorized to test.
+- Address filtering relies on Python's `ipaddress` classification. IPv4/IPv6 special cases and unusual network configurations need further review and tests.
+- Mixed public/non-public DNS answers are filtered rather than causing the entire hostname to be rejected. The implementation must continue to connect only to the returned approved records.
+- The custom transport makes direct connections and does not honor environment-configured HTTP proxies. This behavior is intentional but should be documented for users operating behind proxies.
+- HTTPS uses the default SSL context and supplies the original hostname to TLS. Mocked unit tests do not prove that every real-world TLS/certificate case succeeds; certificate failures must not be bypassed by disabling verification.
+- Redirects are not followed. This behavior must not be weakened without validating each redirect destination independently.
+- The configured timeout is applied to socket operations; it is not a strict total wall-clock deadline, and system DNS resolution may take additional time.
+- IDN/Unicode hostname behavior, expanded IPv6 edge cases, retry/resource-cleanup behavior, and live TLS integration still need additional tests.
+- Network egress restrictions and execution isolation provide additional defense in depth.
 
-Do not treat the current network checks as a substitute for a properly isolated execution environment or enforced network egress restrictions.
+A passing test suite does not establish production security or prove resistance to every SSRF/DNS-rebinding scenario.
 
-## Development Philosophy
+## Development philosophy
 
-The project is being built incrementally:
+1. Understand the problem before adding complexity.
+2. Keep modules focused and changes small enough to review.
+3. Add regression tests for bugs and security-sensitive behavior.
+4. Never claim a security guarantee that the implementation and tests have not established.
+5. Keep secrets, virtual environments, and generated reports out of Git.
+6. Prefer reliable functionality over feature count.
+7. Validate real user demand before investing in larger product infrastructure.
 
-1. Understand each component before adding complexity.
-2. Write testable, modular Python code.
-3. Validate behavior with automated tests.
-4. Document security assumptions and limitations.
-5. Build useful functionality before introducing unnecessary infrastructure.
-6. Validate real user demand before investing in a larger product.
+## Long-term goal
 
-## Long-Term Goal
+The long-term goal is to determine whether a useful, reliable web diagnostics product can be built and distributed. Potential future directions include multiple-target checks, historical comparisons, monitoring, alerts, and a user-friendly interface. These are possibilities, not current capabilities or guaranteed plans.
 
-Develop WebCheck Report into a useful, reliable web diagnostics product that can potentially be distributed or commercialized.
-
-Potential future directions include richer reports, multiple-target checks, monitoring, historical comparisons, and a user-friendly interface. These are possibilities, not current features or guaranteed commitments.
-
-The immediate priority is to make the CLI reliable, address its security limitations, improve its usability, and validate whether real users would pay for the functionality.
-
-See [ROADMAP.md](ROADMAP.md) for planned development.
+See [ROADMAP.md](ROADMAP.md) for current milestones.
 
 ## License
 
-No license has been selected yet. Until one is added, do not assume the project grants permission to redistribute or reuse its code.
+No license has been selected yet. Until a license is added, do not assume the project grants permission to redistribute or reuse its code.

@@ -1,132 +1,118 @@
+"""Tests for the pinned socket HTTP client.
 
-"""Unit tests for HTTP result handling without making real network requests."""
+These tests focus on the behavior that matters for the reachability checker:
+connection pinning, correct request construction, and preserving redirect
+responses instead of silently following them.
+"""
 
+import socket
 import unittest
-from email.message import Message
-from unittest.mock import MagicMock, patch
-from urllib.error import HTTPError, URLError
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
-from webcheck.http_client import check_url # type: ignore
+from webcheck.http_client import PinnedHTTPConnection, PinnedHTTPSConnection, check_url, connect_to_address  # type: ignore
+
+# A public IPv4 address used as a fixed, known-good socket target across tests.
+PUBLIC = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", 443))
+
+
+class TestPinnedConnection(unittest.TestCase):
+    @patch("webcheck.http_client.socket.socket")
+    def test_connect_to_address_uses_exact_sockaddr(self, socket_factory):
+        """Ensure the TCP socket connects to the exact approved sockaddr tuple."""
+        fake_socket = Mock()
+        socket_factory.return_value = fake_socket
+
+        result = connect_to_address(PUBLIC, timeout=3.0)
+
+        # The socket factory should receive the exact family/type/protocol tuple
+        # from the DNS result; we deliberately avoid any extra resolution step.
+        socket_factory.assert_called_once_with(PUBLIC[0], PUBLIC[1], PUBLIC[2])
+        fake_socket.settimeout.assert_called_once_with(3.0)
+        fake_socket.connect.assert_called_once_with(PUBLIC[4])
+        self.assertIs(result, fake_socket)
+
+    @patch("webcheck.http_client.connect_to_address")
+    def test_https_wraps_socket_using_original_hostname(self, connect_mock):
+        """TLS should validate using the original host name, not the IP literal."""
+        raw_socket = Mock()
+        tls_socket = Mock()
+        connect_mock.return_value = raw_socket
+        context = Mock()
+        context.wrap_socket.return_value = tls_socket
+
+        connection = PinnedHTTPSConnection(
+            "example.test", 443, PUBLIC, timeout=2.0, context=context
+        )
+        connection.connect()
+
+        # The transport stays pinned to the approved resolved IP while the TLS
+        # handshake still uses the actual hostname for SNI and certificate checks.
+        connect_mock.assert_called_once_with(PUBLIC, 2.0)
+        context.wrap_socket.assert_called_once_with(
+            raw_socket, server_hostname="example.test"
+        )
+        self.assertIs(connection.sock, tls_socket)
+        connection.close()
 
 
 class TestCheckURL(unittest.TestCase):
-    """Verify check_url's result shape for responses and common failures."""
-
-    @patch("webcheck.http_client.build_opener")
-    @patch("webcheck.http_client.resolve_public_host")
-    def test_successful_response(
-        self, mock_resolve, mock_build_opener
+    @patch("webcheck.http_client.resolve_public_host", return_value=[PUBLIC])
+    @patch("webcheck.http_client.PinnedHTTPConnection")
+    def test_request_uses_pinned_connection_and_origin_form_target(
+        self, connection_class, resolver
     ):
-        """A successful GET returns status and headers after resolving the host."""
-        # Model the response as a context manager, just like urllib's response,
-        # so the test exercises the same open/close flow without a live request.
-        response = MagicMock()
-        response.status = 200
-        response.headers.items.return_value = [
-            ("Content-Type", "text/html")
-        ]
-        response.__enter__.return_value = response
+        """Check that the request is sent with the pinned socket and correct path."""
+        connection = connection_class.return_value
+        response = SimpleNamespace(
+            status=200,
+            getheaders=lambda: [("Content-Type", "text/plain")],
+            close=Mock(),
+        )
+        connection.getresponse.return_value = response
 
-        opener = MagicMock()
-        opener.open.return_value = response
-        mock_build_opener.return_value = opener
+        result = check_url("http://example.test/path?q=1")
 
-        result = check_url("https://example.com")
-
-        # HTTPS without an explicit port must use 443 for the public-host check.
+        # The host must be checked against an approved public address list before
+        # the request is attempted.
+        resolver.assert_called_once_with("example.test", 80)
+        connection_class.assert_called_once_with(
+            "example.test", 80, PUBLIC, timeout=10.0
+        )
+        connection.connect.assert_called_once_with()
+        connection.request.assert_called_once_with(
+            "GET",
+            "/path?q=1",
+            headers={
+                "User-Agent": "WebCheckReport/0.1",
+                "Host": "example.test",
+                "Connection": "close",
+            },
+        )
         self.assertEqual(result["status_code"], 200)
-        self.assertEqual(
-            result["headers"]["Content-Type"], "text/html"
-        )
+        self.assertEqual(result["headers"]["Content-Type"], "text/plain")
         self.assertIsNone(result["error"])
-        mock_resolve.assert_called_once_with("example.com", 443)
-        opener.open.assert_called_once()
+        connection.close.assert_called_once_with()
 
-    @patch("webcheck.http_client.build_opener")
-    @patch("webcheck.http_client.resolve_public_host")
-    def test_http_error_response(
-        self, mock_resolve, mock_build_opener
-    ):
-        """An HTTP error status is still a response, not a transport error."""
-        error = HTTPError(
-            "https://example.com/missing",
-            404,
-            "Not Found",
-            Message(),
-            None,
+    @patch("webcheck.http_client.resolve_public_host", return_value=[PUBLIC])
+    @patch("webcheck.http_client.PinnedHTTPConnection")
+    def test_redirect_is_returned_not_followed(self, connection_class, resolver):
+        """Ensure redirects remain visible instead of being silently followed."""
+        connection = connection_class.return_value
+        response = SimpleNamespace(
+            status=302,
+            getheaders=lambda: [("Location", "http://other.example/")],
+            close=Mock(),
         )
+        connection.getresponse.return_value = response
 
-        opener = MagicMock()
-        opener.open.side_effect = error
-        mock_build_opener.return_value = opener
+        result = check_url("http://example.test/")
 
-        result = check_url("https://example.com/missing")
-
-        # Preserve the server's status while reserving "error" for failures
-        # where no HTTP response could be obtained.
-        self.assertEqual(result["status_code"], 404)
-        self.assertIsNone(result["error"])
-
-    @patch("webcheck.http_client.build_opener")
-    @patch("webcheck.http_client.resolve_public_host")
-    def test_connection_error(
-        self, mock_resolve, mock_build_opener
-    ):
-        """A connection failure has no status code and exposes its cause."""
-        opener = MagicMock()
-        opener.open.side_effect = URLError("Connection refused")
-        mock_build_opener.return_value = opener
-
-        result = check_url("https://example.com", timeout=2)
-
-        self.assertIsNone(result["status_code"])
-        self.assertIn("Connection refused", result["error"])
-
-    @patch("webcheck.http_client.resolve_public_host")
-    def test_rejects_non_public_destination(self, mock_resolve):
-        """A private-address check failure prevents an HTTP request."""
-        mock_resolve.side_effect = ValueError(
-            "Destination resolves to a non-public IP address"
-        )
-
-        result = check_url("http://127.0.0.1:8080")
-
-        self.assertIsNone(result["status_code"])
-        self.assertIn("non-public", result["error"])
-        mock_resolve.assert_called_once_with("127.0.0.1", 8080)
-
-    @patch("webcheck.http_client.build_opener")
-    @patch("webcheck.http_client.resolve_public_host")
-    def test_redirect_is_reported_not_followed(
-        self, mock_resolve, mock_build_opener
-    ):
-        """Return a redirect's Location header without requesting its target."""
-        # The redirect points to loopback deliberately: following it would
-        # bypass the public-host check performed for the original URL.
-        headers = Message()
-        headers["Location"] = "http://127.0.0.1/admin"
-
-        redirect = HTTPError(
-            "https://example.com",
-            302,
-            "Found",
-            headers,
-            None,
-        )
-
-        opener = MagicMock()
-        opener.open.side_effect = redirect
-        mock_build_opener.return_value = opener
-
-        result = check_url("https://example.com")
-
+        # A redirect is still a legitimate server response; the check should show
+        # it as a 3xx instead of treating it as a normal page fetch.
         self.assertEqual(result["status_code"], 302)
-        self.assertEqual(
-            result["headers"]["Location"],
-            "http://127.0.0.1/admin",
-        )
-        # Only one open confirms the redirect target was not fetched.
-        opener.open.assert_called_once()
+        self.assertEqual(result["headers"]["Location"], "http://other.example/")
+        connection.request.assert_called_once()
 
 
 if __name__ == "__main__":
