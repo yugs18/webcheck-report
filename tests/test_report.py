@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from webcheck.report import create_report, save_report # type: ignore
 
@@ -37,6 +38,62 @@ class TestReport(unittest.TestCase):
                 loaded = json.load(file)
 
             self.assertEqual(loaded, report)
+
+
+    def test_non_serializable_report_does_not_create_output(self):
+        report = {"invalid_value": object()}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "nested" / "report.json"
+
+            with self.assertRaises(TypeError):
+                save_report(report, str(output_path))
+
+            self.assertFalse(output_path.exists())
+            self.assertFalse(output_path.parent.exists())
+
+    def test_failed_replacement_preserves_existing_report(self):
+        report = {
+            "generated_at": "2026-10-24T00:00:00+00:00",
+            "result": {"url": "https://example.com", "status_code": 200},
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "report.json"
+            previous_content = '{"previous": true}\n'
+            output_path.write_text(previous_content, encoding="utf-8")
+
+            with patch(
+                "webcheck.report.os.replace",
+                side_effect=OSError("simulated replacement failure"),
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "simulated replacement failure"
+                ):
+                    save_report(report, str(output_path))
+
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8"),
+                previous_content,
+            )
+            self.assertEqual(
+                list(output_path.parent.glob(".report.json.*.tmp")),
+                [],
+            )
+
+    def test_save_report_propagates_filesystem_errors(self):
+        report = {
+            "generated_at": "2026-10-24T00:00:00+00:00",
+            "result": {"url": "https://example.com", "status_code": 200},
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            blocker = Path(temp_dir) / "not-a-directory"
+            blocker.write_text("blocking file", encoding="utf-8")
+            output_path = blocker / "report.json"
+
+            with self.assertRaises(OSError):
+                save_report(report, str(output_path))
 
 
 if __name__ == "__main__":

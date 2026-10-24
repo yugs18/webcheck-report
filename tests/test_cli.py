@@ -1,11 +1,18 @@
 """End-to-end tests for the ``python -m webcheck`` command."""
 
-import json, subprocess, sys, tempfile, unittest
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
 import threading
+
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from webcheck.__main__ import _run_check_with_wall_clock_limit  # type: ignore
+from webcheck.__main__ import _run_check_with_wall_clock_limit, main # type: ignore
 
 class TestCLI(unittest.TestCase):
     """Exercise CLI argument handling, exit codes, and report creation."""
@@ -79,6 +86,91 @@ class TestCLI(unittest.TestCase):
 
             self.assertIsNone(report["result"]["status_code"])
             self.assertIsNotNone(report["result"]["error"])
+
+    def test_report_write_failure_returns_one_without_success_summary(self):
+        result_data = {
+            "url": "https://example.com",
+            "status_code": 200,
+            "headers": {},
+            "elapsed_seconds": 0.01,
+            "error": None,
+        }
+
+        stdout = StringIO()
+        stderr = StringIO()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # A regular file cannot serve as the parent directory.
+            blocker = Path(temp_dir) / "not-a-directory"
+            blocker.write_text("blocking file", encoding="utf-8")
+            output_path = blocker / "report.json"
+
+            with (
+                patch(
+                    "webcheck.__main__._run_check_with_wall_clock_limit",
+                    return_value=result_data,
+                ),
+                patch(
+                    "sys.argv",
+                    [
+                        "webcheck",
+                        "https://example.com",
+                        "--output",
+                        str(output_path),
+                    ],
+                ),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                exit_code = main()
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Error saving report", stderr.getvalue())
+        self.assertNotIn("Report saved to:", stdout.getvalue())
+        self.assertNotIn("HTTP status:", stdout.getvalue())
+
+    def test_serialization_failure_returns_one_without_partial_report(self):
+        result_data = {
+            "url": "https://example.com",
+            "status_code": 200,
+            "headers": {},
+            "elapsed_seconds": 0.01,
+            "error": None,
+            "unexpected_value": object(),
+        }
+
+        stdout = StringIO()
+        stderr = StringIO()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "nested" / "report.json"
+
+            with (
+                patch(
+                    "webcheck.__main__._run_check_with_wall_clock_limit",
+                    return_value=result_data,
+                ),
+                patch(
+                    "sys.argv",
+                    [
+                        "webcheck",
+                        "https://example.com",
+                        "--output",
+                        str(output_path),
+                    ],
+                ),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                exit_code = main()
+
+            self.assertFalse(output_path.exists())
+            self.assertFalse(output_path.parent.exists())
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Error saving report", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+        self.assertNotIn("Report saved to:", stdout.getvalue())
 
 
 if __name__ == "__main__":

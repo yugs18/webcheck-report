@@ -8,6 +8,8 @@ multiple output targets.
 """
 
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,37 +39,56 @@ def create_report(result: dict) -> dict:
 
 
 def save_report(report: dict, output_path: str) -> None:
-    """Persist a report dictionary as indented UTF-8 JSON.
+    """Atomically save a report as indented UTF-8 JSON.
 
-    The function ensures the destination directory exists before writing and uses
-    ``json.dump`` with indentation so the output is easy to inspect by hand or in
-    a text editor. Existing files at the target path are overwritten, which is a
-    convenient behavior for generated reports that are meant to reflect the latest
-    check results.
+    The report is serialized before filesystem changes are made. The completed
+    temporary file is then atomically moved into place, so a failed write
+    does not replace an existing report with incomplete JSON.
 
     Args:
         report: The report dictionary to serialize.
-        output_path: A filesystem path where the JSON document should be written.
+        output_path: Destination filesystem path.
 
     Raises:
-        OSError: If the parent directory cannot be created or the file cannot be
-            opened/written.
+        OSError: If directory creation, writing, or replacement fails.
         TypeError: If the report cannot be serialized as JSON.
+        ValueError: If JSON serialization fails because of invalid data.
     """
     path = Path(output_path)
 
-    # Create missing parent folders before writing. This is especially useful for
-    # nested output paths such as ``reports/daily/site.json`` where the directory
-    # may not yet exist.
+    # Serialize first so invalid data does not create or truncate a report.
+    serialized = json.dumps(
+        report,
+        indent=2,
+        ensure_ascii=False,
+    ) + "\n"
+
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Use a context manager to guarantee the file is closed even if the JSON dump
-    # fails midway through serialization.
-    with path.open("w", encoding="utf-8") as file:
-        # Pretty-printing improves readability for humans, and ensure_ascii=False
-        # keeps non-ASCII text intact instead of escaping it to \uXXXX sequences.
-        json.dump(report, file, indent=2, ensure_ascii=False)
+    temporary_path = None
 
-        # A trailing newline is conventional for generated text files and makes the
-        # output cleaner when viewed in terminal editors or diffs.
-        file.write("\n")
+    try:
+        # Keep the temporary file in the destination directory so replacement
+        # happens on the same filesystem.
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as file:
+            temporary_path = Path(file.name)
+            file.write(serialized)
+
+        # Replace the destination only after the complete JSON file is written.
+        os.replace(temporary_path, path)
+        temporary_path = None
+
+    finally:
+        # Clean up a temporary file if writing or replacement failed.
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass

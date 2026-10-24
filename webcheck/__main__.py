@@ -116,8 +116,11 @@ def main() -> int:
     # occur (for example, if the destination is not writable).
     try:
         save_report(report, output_path)
-    except OSError as error:
-        print(f"Error saving report: {error}", file=sys.stderr)
+    except (OSError, TypeError, ValueError) as error:
+        print(
+            f"Error saving report to {output_path!r}: {error}",
+            file=sys.stderr,
+        )
         return 1
 
     # Keep terminal output brief; headers and other full result details remain
