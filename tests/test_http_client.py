@@ -291,7 +291,7 @@ class TestCheckURL(unittest.TestCase):
             10**1000,
         ):
             with self.subTest(timeout=invalid_timeout):
-                result = check_url("http://example.test", timeout=invalid_timeout)
+                result = check_url("http://example.test", timeout=invalid_timeout) # type: ignore
                 self.assertIsNone(result["status_code"])
                 self.assertIn("finite positive", result["error"])
         resolver.assert_not_called()
@@ -378,6 +378,49 @@ class TestCheckURL(unittest.TestCase):
                 TimeoutError, "Operation deadline exceeded"
             ):
                 _remaining_timeout(110.0)
+
+    @patch(
+        "webcheck.http_client.time.perf_counter",
+        side_effect=[10.0, 10.375],
+    )
+    @patch(
+        "webcheck.http_client.resolve_public_host",
+        return_value=[PUBLIC_HTTP],
+    )
+    @patch("webcheck.http_client.PinnedHTTPConnection")
+    def test_elapsed_seconds_records_successful_check_duration(
+        self, connection_class, resolver, clock
+    ):
+        response = SimpleNamespace(
+            status=200,
+            getheaders=lambda: [("Content-Type", "text/plain")],
+            close=Mock(),
+        )
+        connection_class.return_value.getresponse.return_value = response
+
+        result = check_url("http://example.test/")
+
+        self.assertEqual(result["status_code"], 200)
+        self.assertIsNone(result["error"])
+        self.assertEqual(result["elapsed_seconds"], 0.375)
+
+
+    @patch(
+        "webcheck.http_client.time.perf_counter",
+        side_effect=[20.0, 20.125],
+    )
+    @patch(
+        "webcheck.http_client.resolve_public_host",
+        side_effect=OSError("Simulated DNS failure"),
+    )
+    def test_elapsed_seconds_records_failed_check_duration(
+        self, resolver, clock
+    ):
+        result = check_url("http://example.test/")
+
+        self.assertIsNone(result["status_code"])
+        self.assertEqual(result["error"], "Simulated DNS failure")
+        self.assertEqual(result["elapsed_seconds"], 0.125)
 
 
 if __name__ == "__main__":

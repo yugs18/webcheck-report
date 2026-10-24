@@ -41,6 +41,7 @@ class TestCLI(unittest.TestCase):
             self.assertTrue(started.wait(0.5), "Check worker did not start")
             self.assertIsNone(result["status_code"])
             self.assertIn("wall-clock limit exceeded", result["error"])
+            self.assertGreaterEqual(result["elapsed_seconds"], 0.02)
         finally:
             release.set()
 

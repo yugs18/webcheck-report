@@ -92,6 +92,28 @@ By default, a report is written under `reports/` with a UTC timestamp in its fil
 
 A failed network check is still represented in a JSON report when report writing succeeds. Invalid URL syntax is rejected before a report is generated.
 
+## Timing and timeout semantics
+
+WebCheck Report records `elapsed_seconds` as the wall-clock duration of a check attempt, measured with a monotonic performance clock.
+
+For a completed check, this duration includes URL validation, DNS resolution, connection attempts, TLS negotiation where applicable, and HTTP response-status and header processing. It excludes report creation and JSON file writing.
+
+### Library timeout
+
+The `check_url()` function accepts a positive, finite timeout in seconds, subject to the implementation's configured maximum.
+
+The timeout is an operation budget, not a guarantee that every underlying blocking operation can be forcibly interrupted at the exact deadline. DNS waiting is bounded from the caller's perspective, but a system resolver call may continue in a bounded daemon thread after the caller times out. Blocking network operations can also overrun the deadline before the overrun is detected.
+
+When an operation fails or a response arrives after the deadline, the result records the failure rather than treating a late response as a successful check.
+
+### CLI supervisor timeout
+
+The standalone CLI applies a separate 10-second wait limit to the check worker. When that limit expires, the CLI produces a timeout result and attempts to save it as a JSON report.
+
+The 10-second limit applies to waiting for the check result, not to the entire command process. Report generation and file writing occur afterward and can add time.
+
+The CLI supervisor does not make `check_url()` forcibly cancellable for applications that import and call it directly. Long-running services should use a killable worker-process boundary and enforce outbound network restrictions before accepting untrusted URLs.
+
 ## Example JSON report
 
 ```json
