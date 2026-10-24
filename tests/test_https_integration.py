@@ -37,8 +37,8 @@ class LocalHTTPSTestServer:
 
         server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         server_context.load_cert_chain(
-            certfile=str(certfile),
-            keyfile=str(keyfile),
+            certfile=certfile,
+            keyfile=keyfile,
         )
 
         self.server.socket = server_context.wrap_socket(
@@ -91,12 +91,16 @@ class TestHTTPSIntegration(unittest.TestCase):
                 )
 
     def test_trusted_certificate_and_matching_san_succeed(self):
-        context = ssl.create_default_context(cafile=str(CA_CERT))
+        context = ssl.create_default_context(cafile=CA_CERT)
 
         result = self.run_local_check(context)
 
-        self.assertEqual(result["status_code"], 200)
-        self.assertIsNone(result["error"])
+        self.assertEqual(
+            result["status_code"], 200, msg=f"Unexpected check result: {result!r}",
+        )
+        self.assertIsNone(
+            result["error"], msg=f"Unexpected check error: {result['error']!r}",
+        )
 
     def test_untrusted_certificate_is_rejected(self):
         # System trust store does not include our private test CA.
@@ -112,7 +116,7 @@ class TestHTTPSIntegration(unittest.TestCase):
         )
 
     def test_trusted_certificate_with_wrong_san_is_rejected(self):
-        context = ssl.create_default_context(cafile=str(CA_CERT))
+        context = ssl.create_default_context(cafile=CA_CERT)
 
         result = self.run_local_check(
             context,

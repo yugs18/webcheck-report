@@ -35,3 +35,12 @@ __pycache__/
 
 # Local configuration
 *.local
+
+/tests/fixtures/*
+
+!/tests/fixtures/README.md
+!/tests/fixtures/ca.crt
+!/tests/fixtures/server.crt
+!/tests/fixtures/server.key
+!/tests/fixtures/wrong-server.crt
+!/tests/fixtures/wrong-server.key
