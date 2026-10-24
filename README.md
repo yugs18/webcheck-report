@@ -92,6 +92,30 @@ By default, a report is written under `reports/` with a UTC timestamp in its fil
 
 A failed network check is still represented in a JSON report when report writing succeeds. Invalid URL syntax is rejected before a report is generated.
 
+### Optional HTTP status failure policy
+
+By default, WebCheck Report preserves its existing behavior: receiving an HTTP response does not itself cause a nonzero exit code. This includes responses such as `404 Not Found` and `500 Internal Server Error`.
+
+The optional `--except-status` argument enables status-based failure handling. When enabled, HTTP `4xx` and `5xx` responses cause exit code `1` unless their status codes are explicitly excepted. HTTP `2xx` and `3xx` responses do not fail this status policy.
+
+For example, allow `404` while treating other `4xx` and `5xx` responses as failures:
+
+```bash
+python -m webcheck https://example.com --except-status 404
+```
+
+Multiple exceptions can be supplied:
+
+```bash
+python -m webcheck https://example.com \
+  --except-status 404 \
+  --except-status 429
+```
+
+When a status-based failure occurs, the CLI still saves the JSON report if writing succeeds. The report retains the actual HTTP status and keeps `error` as `null`, because an HTTP response was received. The CLI's status policy affects its exit code and diagnostic message; it does not rewrite the underlying HTTP result.
+
+If `--except-status` is omitted, existing exit-code behavior is unchanged. Operational failures such as DNS, connection, TLS, timeout, and report-writing errors continue to use their existing failure behavior.
+
 ## Timing and timeout semantics
 
 WebCheck Report records `elapsed_seconds` as the wall-clock duration of a check attempt, measured with a monotonic performance clock.

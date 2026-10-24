@@ -40,7 +40,7 @@ class TestCLI(unittest.TestCase):
 
             self.assertTrue(started.wait(0.5), "Check worker did not start")
             self.assertIsNone(result["status_code"])
-            self.assertIn("wall-clock limit exceeded", result["error"])
+            self.assertIn("wall-clock limit exceeded", result["error"] or "")
             self.assertGreaterEqual(result["elapsed_seconds"], 0.02)
         finally:
             release.set()
@@ -175,6 +175,89 @@ class TestCLI(unittest.TestCase):
         self.assertIn("Error saving report", stderr.getvalue())
         self.assertNotIn("Traceback", stderr.getvalue())
         self.assertNotIn("Report saved to:", stdout.getvalue())
+
+
+    def _run_cli_with_status(self, status_code, extra_args):
+        result_data = {
+            "url": "https://example.com",
+            "status_code": status_code,
+            "headers": {},
+            "elapsed_seconds": 0.01,
+            "error": None,
+        }
+
+        stdout = StringIO()
+        stderr = StringIO()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "report.json"
+
+            argv = [
+                "webcheck",
+                "https://example.com",
+                "--output",
+                str(output_path),
+                *extra_args,
+            ]
+
+            with (
+                patch(
+                    "webcheck.__main__._run_check_with_wall_clock_limit",
+                    return_value=result_data,
+                ),
+                patch("sys.argv", argv),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                exit_code = main()
+
+            with output_path.open(encoding="utf-8") as file:
+                report = json.load(file)
+
+        return exit_code, stdout.getvalue(), stderr.getvalue(), report
+
+    def test_http_status_behavior_is_unchanged_without_option(self):
+        exit_code, stdout, stderr, report = self._run_cli_with_status(
+            500, []
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIsNone(report["result"]["error"])
+        self.assertEqual(report["result"]["status_code"], 500)
+        self.assertEqual(stderr, "")
+
+    def test_except_status_allows_listed_http_error(self):
+        exit_code, stdout, stderr, report = self._run_cli_with_status(
+            404, ["--except-status", "404"]
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(report["result"]["status_code"], 404)
+        self.assertIsNone(report["result"]["error"])
+        self.assertEqual(stderr, "")
+
+    def test_non_excepted_http_error_returns_failure(self):
+        exit_code, stdout, stderr, report = self._run_cli_with_status(
+            500, ["--except-status", "404"]
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("HTTP status 500", stderr)
+        self.assertIn("Report saved to:", stdout)
+        self.assertEqual(report["result"]["status_code"], 500)
+        self.assertIsNone(report["result"]["error"])
+
+    def test_multiple_except_status_codes_are_supported(self):
+        exit_code, stdout, stderr, report = self._run_cli_with_status(
+            429,
+            [
+                "--except-status", "404",
+                "--except-status", "429",
+            ],
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(report["result"]["status_code"], 429)
 
 
 if __name__ == "__main__":

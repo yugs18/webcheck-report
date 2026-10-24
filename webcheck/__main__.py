@@ -69,6 +69,23 @@ def _run_check_with_wall_clock_limit(
     return outcome["result"]
 
 
+def _http_status_code(value: str) -> int:
+    """Parse an HTTP status code for the CLI."""
+    try:
+        status = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "HTTP status must be an integer from 100 to 599"
+        ) from None
+
+    if not 100 <= status <= 599:
+        raise argparse.ArgumentTypeError(
+            "HTTP status must be between 100 and 599"
+        )
+
+    return status
+
+
 def main() -> int:
     """Run the command-line workflow and return the process exit code.
 
@@ -90,6 +107,17 @@ def main() -> int:
         help="Output JSON file path (defaults to a timestamped file in reports/)",
     )
 
+    parser.add_argument(
+        "--except-status",
+        action="append",
+        type=_http_status_code,
+        default=None,
+        metavar="CODE",
+        help=(
+            "When supplied, treat HTTP 4xx/5xx responses as failures "
+            "unless their status codes are listed. May be repeated."
+        ),
+    )
     args = parser.parse_args()
 
     # Reject malformed input early: no DNS lookup or HTTP request is needed, and
@@ -104,6 +132,20 @@ def main() -> int:
         args.url,
         timeout=CLI_CHECK_TIMEOUT_SECONDS,
     )
+
+    # Preserve legacy behavior unless the caller explicitly enables
+    # status-based failure handling with --except-status.
+    except_statuses = set(args.except_status or [])
+
+    status_code = result["status_code"]
+    status_based_failure = (
+        args.except_status is not None
+        and result["error"] is None
+        and status_code is not None
+        and 400 <= status_code <= 599
+        and status_code not in except_statuses
+    )
+
     report = create_report(result)
 
     # An explicit --output path is used as given. Otherwise generate a
@@ -137,8 +179,14 @@ def main() -> int:
 
     print(f"Report saved to: {Path(output_path)}")
 
-    # Report creation succeeding does not mean the website check itself passed.
-    return 1 if result["error"] else 0
+    if status_based_failure:
+        print(
+            f"Error: HTTP status {status_code} is not in the "
+            "--except-status allowlist; treating the check as failed.",
+            file=sys.stderr,
+        )
+
+    return 1 if result["error"] or status_based_failure else 0
 
 
 if __name__ == "__main__":

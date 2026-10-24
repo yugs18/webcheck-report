@@ -76,12 +76,12 @@ The code-level review checklist below has been addressed for the reviewed source
 
 **Goal:** Make results predictable and easier to integrate into developer workflows.
 
-- [ ] Review error messages for clarity and consistency.
-- [ ] Review elapsed-time semantics and timeout behavior.
-- [ ] Add tests for report-write failures and remaining CLI edge cases.
-- [ ] Define stable JSON result fields and behavior for redirects and HTTP error statuses.
-- [ ] Add type annotations and documentation where they improve clarity.
-- [ ] Run the complete test suite after every meaningful change.
+- [x] Review error messages for clarity and consistency.
+- [x] Review elapsed-time semantics and timeout behavior.
+- [x] Add tests for report-write failures and remaining CLI edge cases.
+- [x] Define stable JSON result fields and behavior for redirects and HTTP error statuses.
+- [x] Add type annotations and documentation where they improve clarity.
+- [x] Run the complete test suite after every meaningful change.
 
 **Completion criteria:** Users can understand the results and failures, and changes can be made without breaking existing behavior.
 
