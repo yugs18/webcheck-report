@@ -133,6 +133,38 @@ The CLI supervisor does not make `check_url()` forcibly cancellable for applicat
 
 The values above are illustrative. The actual status, headers, elapsed time, and error depend on the destination and network conditions.
 
+## JSON result contract
+
+Each check result contains the following fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `url` | String | URL supplied for the check |
+| `status_code` | Integer or `null` | HTTP status code when an HTTP response is received |
+| `headers` | Object | Response headers, or an empty object when no HTTP response is received |
+| `elapsed_seconds` | Number | Wall-clock duration of the check, measured in seconds |
+| `error` | String or `null` | Operational failure message, or `null` when an HTTP response is received |
+
+A saved JSON report wraps the result in an object containing `generated_at`, an ISO 8601 UTC timestamp, and `result`, the check-result object.
+
+### HTTP status behavior
+
+WebCheck Report records the HTTP status returned by the server. It does not automatically follow redirects or treat HTTP error status codes as transport failures.
+
+- **2xx:** The server returned a successful HTTP response.
+- **3xx:** The redirect status and response headers are returned. The redirect is not followed.
+- **4xx and 5xx:** The HTTP status and response headers are returned as diagnostic results. The status alone does not populate the tool-level `error` field.
+
+### Operational failure behavior
+
+When the checker cannot obtain an HTTP response—for example, due to DNS resolution failure, connection failure, TLS verification failure, or a timeout—the result uses `status_code: null`, an empty `headers` object, and a descriptive `error` string.
+
+### Compatibility expectations
+
+The five result fields above form the required result shape. Their meanings should remain stable. Changes to field names, data types, or the distinction between HTTP responses and operational failures should be treated as changes to the public output contract and accompanied by corresponding tests and documentation updates.
+
+JSON consumers should not infer that a website is healthy merely because a check returned an HTTP response. For example, a `503` response indicates that the server responded but reported a service-unavailable condition.
+
 ## Tests
 
 Run the complete `unittest` suite from the repository root:

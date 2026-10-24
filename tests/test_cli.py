@@ -87,6 +87,9 @@ class TestCLI(unittest.TestCase):
 
             self.assertIsNone(report["result"]["status_code"])
             self.assertIsNotNone(report["result"]["error"])
+            self.assertIn("Error:", result.stderr)
+            self.assertNotIn("Error:", result.stdout)
+
 
     def test_report_write_failure_returns_one_without_success_summary(self):
         result_data = {

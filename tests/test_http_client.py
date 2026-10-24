@@ -293,7 +293,7 @@ class TestCheckURL(unittest.TestCase):
             with self.subTest(timeout=invalid_timeout):
                 result = check_url("http://example.test", timeout=invalid_timeout) # type: ignore
                 self.assertIsNone(result["status_code"])
-                self.assertIn("finite positive", result["error"])
+                self.assertIn("finite positive", result["error"] or "")
         resolver.assert_not_called()
 
     @patch("webcheck.http_client.time.monotonic")
@@ -317,7 +317,7 @@ class TestCheckURL(unittest.TestCase):
         result = check_url("http://example.test/", timeout=10.0)
 
         self.assertIsNone(result["status_code"])
-        self.assertIn("deadline exceeded", result["error"].lower())
+        self.assertIn("deadline exceeded", (result["error"] or "").lower())
         self.assertEqual(connection_class.call_count, 1)
         first_connection.close.assert_called_once_with()
 
@@ -356,7 +356,7 @@ class TestCheckURL(unittest.TestCase):
         self.assertIsNone(result["status_code"])
         self.assertIn(
             "Operation deadline exceeded",
-            result["error"],
+            result["error"] or "",
         )
         connection.close.assert_called_once()
         response.close.assert_called_once()
@@ -378,6 +378,7 @@ class TestCheckURL(unittest.TestCase):
                 TimeoutError, "Operation deadline exceeded"
             ):
                 _remaining_timeout(110.0)
+
 
     @patch(
         "webcheck.http_client.time.perf_counter",
@@ -419,8 +420,83 @@ class TestCheckURL(unittest.TestCase):
         result = check_url("http://example.test/")
 
         self.assertIsNone(result["status_code"])
-        self.assertEqual(result["error"], "Simulated DNS failure")
+        self.assertEqual(result["error"], "Network operation failed: Simulated DNS failure")
         self.assertEqual(result["elapsed_seconds"], 0.125)
+
+
+    @patch(
+        "webcheck.http_client.resolve_public_host",
+        return_value=[PUBLIC_HTTP],
+    )
+    @patch("webcheck.http_client.PinnedHTTPConnection")
+    def test_http_statuses_follow_stable_result_contract(
+        self, connection_class, resolver
+    ):
+        expected_fields = {
+            "url",
+            "status_code",
+            "headers",
+            "elapsed_seconds",
+            "error",
+        }
+
+        for status in (200, 302, 404, 500, 503):
+            with self.subTest(status=status):
+                response_headers = (
+                    [("Location", "https://example.test/next")]
+                    if status == 302
+                    else [("Content-Type", "text/plain")]
+                )
+
+                response = SimpleNamespace(
+                    status=status,
+                    getheaders=lambda values=response_headers: values,
+                    close=Mock(),
+                )
+
+                connection = Mock()
+                connection.getresponse.return_value = response
+                connection_class.return_value = connection
+
+                result = check_url("http://example.test/")
+
+                self.assertEqual(set(result), expected_fields)
+                self.assertEqual(result["url"], "http://example.test/")
+                self.assertEqual(result["status_code"], status)
+                self.assertEqual(result["headers"], dict(response_headers))
+                self.assertIsInstance(result["elapsed_seconds"], (int, float))
+                self.assertGreaterEqual(result["elapsed_seconds"], 0)
+                self.assertIsNone(result["error"])
+
+                # A redirect is returned to the caller, not followed.
+                connection.request.assert_called_once()
+
+
+    @patch(
+        "webcheck.http_client.resolve_public_host",
+        side_effect=socket.gaierror("Simulated DNS failure"),
+    )
+    def test_dns_failure_follows_stable_result_contract(self, resolver):
+        expected_fields = {
+            "url",
+            "status_code",
+            "headers",
+            "elapsed_seconds",
+            "error",
+        }
+
+        result = check_url("http://example.test/")
+
+        self.assertEqual(set(result), expected_fields)
+        self.assertEqual(result["url"], "http://example.test/")
+        self.assertIsNone(result["status_code"])
+        self.assertEqual(result["headers"], {})
+        self.assertIsInstance(result["elapsed_seconds"], (int, float))
+        self.assertGreaterEqual(result["elapsed_seconds"], 0)
+        self.assertEqual(
+            result["error"],
+            "DNS resolution failed: Simulated DNS failure",
+        )
 
 
 if __name__ == "__main__":

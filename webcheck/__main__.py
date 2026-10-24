@@ -6,8 +6,9 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
-from webcheck.http_client import check_url # type: ignore
+from webcheck.http_client import CheckResult, check_url # type: ignore
 from webcheck.report import create_report, save_report # type: ignore
 from webcheck.url_validator import validate_url # type: ignore
 
@@ -17,7 +18,7 @@ CLI_CHECK_TIMEOUT_SECONDS = 10.0
 
 def _run_check_with_wall_clock_limit(
     url: str, timeout: float = CLI_CHECK_TIMEOUT_SECONDS
-) -> dict:
+) -> CheckResult:
     """Bound the standalone CLI's wait for a single check.
 
     The check runs in a daemon thread. When the limit expires, the CLI can
@@ -30,7 +31,7 @@ def _run_check_with_wall_clock_limit(
     """
     started = time.perf_counter()
     completed = threading.Event()
-    outcome = {}
+    outcome: dict[str, Any] = {}
 
     def perform_check():
         try:
@@ -132,7 +133,7 @@ def main() -> int:
     # A request failure is printed after the summary and also determines the
     # final non-zero exit code below.
     if result["error"]:
-        print(f"Error: {result['error']}")
+        print(f"Error: {result['error']}", file=sys.stderr)
 
     print(f"Report saved to: {Path(output_path)}")
 

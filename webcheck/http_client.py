@@ -19,6 +19,7 @@ import time
 from urllib.parse import urlparse
 
 from webcheck.url_validator import validate_url  # type: ignore
+from webcheck.models import CheckResult  # type: ignore
 
 # Use a stable identifier for outbound requests so servers can recognize the
 # tool if they log incoming traffic. Keeping this constant centralized makes it
@@ -306,14 +307,55 @@ def _remaining_timeout(deadline):
     return remaining
 
 
-def _failure(url, started, error):
+def _format_error(error: BaseException | str) -> str:
+    """Return a clear, consistent message for a failed check."""
+    if isinstance(error, str):
+        return error
+
+    message = str(error).strip() or type(error).__name__
+
+    if isinstance(error, ssl.SSLCertVerificationError):
+        return f"TLS certificate verification failed: {message}"
+
+    if isinstance(error, ssl.SSLError):
+        return f"TLS negotiation failed: {message}"
+
+    if isinstance(error, socket.gaierror):
+        return f"DNS resolution failed: {message}"
+
+    if isinstance(error, TimeoutError):
+        if message.startswith((
+            "DNS resolution timed out",
+            "Operation deadline exceeded",
+        )):
+            return message
+        return f"Network operation timed out: {message}"
+
+    if isinstance(error, http.client.HTTPException):
+        return f"HTTP protocol error: {message}"
+
+    if isinstance(error, OSError):
+        return f"Network operation failed: {message}"
+
+    if isinstance(error, ValueError):
+        if message == "No approved global destination addresses":
+            return (
+                "Destination rejected: no approved public addresses "
+                "remain after DNS filtering"
+            )
+        return message
+
+    return f"Check failed: {message}"
+
+
+def _failure(url, started, error) -> CheckResult:
     """Normalize a failed check into the standard result dictionary shape."""
     return {
         "url": url,
         "status_code": None,
         "headers": {},
         "elapsed_seconds": round(time.perf_counter() - started, 4),
-        "error": str(error),
+        "error": _format_error(error),
     }
 
 
@@ -326,7 +368,7 @@ def _host_authority(host, port, explicit_port):
     return f"{display_host}:{port}" if explicit_port is not None else display_host
 
 
-def check_url(url: str, timeout: float = 10.0) -> dict:
+def check_url(url: str, timeout: float = 10.0) -> CheckResult:
     """Send a GET request to a URL while pinning the socket to an approved address.
 
     The function intentionally rejects redirects by returning the redirecting

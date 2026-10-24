@@ -13,8 +13,10 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from webcheck.models import CheckResult, Report  # type: ignore
 
-def create_report(result: dict) -> dict:
+
+def create_report(result: CheckResult) -> Report:
     """Build a report payload from a single check result.
 
     A report is not just the raw check result; it also includes a timestamp that
@@ -38,7 +40,7 @@ def create_report(result: dict) -> dict:
     }
 
 
-def save_report(report: dict, output_path: str) -> None:
+def save_report(report: Report, output_path: str | Path) -> None:
     """Atomically save a report as indented UTF-8 JSON.
 
     The report is serialized before filesystem changes are made. The completed
